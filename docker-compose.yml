@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: remarka-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-remarka}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-remarka}
+      POSTGRES_DB: ${POSTGRES_DB:-remarka}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-remarka} -d ${POSTGRES_DB:-remarka}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: remarka-backend
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network the database host is the service name.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-remarka}:${POSTGRES_PASSWORD:-remarka}@postgres:5432/${POSTGRES_DB:-remarka}
+      STORAGE_LOCAL_DIR: /data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - uploads_data:/data/uploads
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api/v1}
+    container_name: remarka-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
+volumes:
+  postgres_data:
+  uploads_data:
