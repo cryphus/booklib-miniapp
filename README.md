@@ -1,5 +1,7 @@
 # Remarka
 
+[![CI](https://github.com/cryphus/booklib-miniapp/actions/workflows/ci.yml/badge.svg)](https://github.com/cryphus/booklib-miniapp/actions/workflows/ci.yml)
+
 Telegram Mini App для личной библиотеки: книги, цитаты, собственные мысли, теги, поиск
 и AI-ассистент, который отвечает **только** на основании записей самого пользователя.
 
@@ -10,6 +12,7 @@ Telegram Mini App для личной библиотеки: книги, цита
 - [4a. Фронтенд](#4a-фронтенд)
 - [5. Локальная разработка](#5-локальная-разработка)
 - [6. Запуск через Docker](#6-запуск-через-docker)
+- [6a. CI](#6a-ci)
 - [7. Миграции базы данных](#7-миграции-базы-данных)
 - [8. Настройка Telegram-бота](#8-настройка-telegram-бота)
 - [9. Настройка Telegram Mini App](#9-настройка-telegram-mini-app)
@@ -225,6 +228,22 @@ docker compose up --build
 ```bash
 docker compose exec backend python -m app.seed
 ```
+
+## 6a. CI
+
+`.github/workflows/ci.yml` гоняется на каждый push/PR в `master`:
+
+| Job | Что проверяет |
+|---|---|
+| `lint` | `ruff check` по backend |
+| `test-sqlite` | все 83 теста на in-memory SQLite (быстрый прогон) |
+| `test-postgres` | `alembic upgrade head` + `alembic check` + тот же набор тестов, но против реального `pgvector/pgvector:pg16` — единственное место, где Postgres-специфичный код (тип `Vector`, JSONB, расширения `vector`/`pg_trgm`) действительно исполняется |
+| `frontend-check` | синтаксис каждого ES-модуля (`node --check`) и граф импортов (`frontend/scripts/check_modules.py` — битые относительные пути, несуществующие именованные экспорты) |
+| `docker-build` | оба `Dockerfile` (backend, frontend) реально собираются |
+| `compose-smoke` | `docker compose up` поднимает backend + postgres и дожидается `200` на `/health` |
+
+CD (автодеплой на сервер по мержу в `master`) пока не настроен — под него нужно выбрать
+хостинг и завести секреты в GitHub (Settings → Secrets), сам workflow добавляется отдельно.
 
 ## 7. Миграции базы данных
 
