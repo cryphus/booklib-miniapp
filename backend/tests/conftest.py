@@ -20,6 +20,7 @@ os.environ.setdefault("RATE_LIMIT_ENABLED", "False")
 
 import pytest  # noqa: E402
 from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
@@ -40,14 +41,27 @@ from app.services.billing_service import BillingService  # noqa: E402
 
 @pytest.fixture
 async def engine():
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    """Runs the same suite against in-memory SQLite by default, or against a real
+    PostgreSQL + pgvector database when DATABASE_URL is overridden (CI does this to
+    exercise the Postgres-only code paths — Vector columns, JSONB, trigram/HNSW indexes —
+    that SQLite's fallback types never touch)."""
+    db_url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    is_sqlite = db_url.startswith("sqlite")
+
+    engine_kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool} if is_sqlite else {}
+    engine = create_async_engine(db_url, **engine_kwargs)
     install_sqlite_unicode_functions(engine)
+
     async with engine.begin() as conn:
+        if not is_sqlite:
+            # A real Postgres instance is shared across the whole test run, so each test
+            # starts from a clean schema instead of relying on SQLite's per-engine isolation.
+            await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
         await conn.run_sync(Base.metadata.create_all)
+
     yield engine
     await engine.dispose()
 
