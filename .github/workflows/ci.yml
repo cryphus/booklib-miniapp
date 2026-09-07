@@ -68,7 +68,9 @@ jobs:
       APP_ENV: test
       DATABASE_URL: postgresql+asyncpg://remarka:remarka@localhost:5432/remarka
       SECRET_KEY: ci-postgres-secret
-      TELEGRAM_BOT_TOKEN: "123456:CI-TEST-TOKEN"
+      # Должен совпадать с BOT_TOKEN, которым tests/test_auth.py подписывает initData —
+      # иначе проверка HMAC-подписи корректно, но неожиданно для CI, отклоняет её.
+      TELEGRAM_BOT_TOKEN: "123456:TEST-BOT-TOKEN"
       AI_PROVIDER: fake
       EMBEDDING_DIM: "64"
       AI_MIN_RELEVANCE: "0.05"
