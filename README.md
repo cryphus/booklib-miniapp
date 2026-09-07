@@ -242,8 +242,45 @@ docker compose exec backend python -m app.seed
 | `docker-build` | оба `Dockerfile` (backend, frontend) реально собираются |
 | `compose-smoke` | `docker compose up` поднимает backend + postgres и дожидается `200` на `/health` |
 
-CD (автодеплой на сервер по мержу в `master`) пока не настроен — под него нужно выбрать
-хостинг и завести секреты в GitHub (Settings → Secrets), сам workflow добавляется отдельно.
+### CD — автодеплой на VPS по SSH
+
+Job `deploy` синхронизирует репозиторий на сервер (`rsync`) и выполняет
+`docker compose up --build -d`. Он **выключен по умолчанию** и корректно
+пропускается (не падает), пока в репозитории не заведена переменная
+`DEPLOY_ENABLED=true` — так что до настройки сервера CI остаётся зелёным.
+
+Секреты приложения (`TELEGRAM_BOT_TOKEN`, `LLM_API_KEY` и т.д.) в GitHub **не
+передаются** — `.env` на сервере создаётся один раз вручную и деплой его не трогает
+(`rsync --exclude='.env'`).
+
+**Разовая настройка сервера:**
+
+1. Установить Docker и плагин Compose (`docker compose version` должен работать).
+2. Создать пользователя для деплоя (или использовать существующего) и каталог,
+   например `/opt/remarka`.
+3. Сгенерировать отдельный ключ **только для CI** (не переиспользуйте личный):
+   ```bash
+   ssh-keygen -t ed25519 -C "github-actions-deploy" -f deploy_key -N ""
+   ```
+   Публичный ключ (`deploy_key.pub`) — в `~/.ssh/authorized_keys` пользователя на
+   сервере. Приватный (`deploy_key`) — в GitHub Secret `SSH_PRIVATE_KEY`.
+4. На сервере в `/opt/remarka` (пока пусто) создать `.env` из `.env.example` с
+   реальными значениями — это будет сделано один раз и переживёт все деплои.
+
+**В GitHub (Settings → Secrets and variables → Actions):**
+
+| Куда | Имя | Значение |
+|---|---|---|
+| Secrets | `SSH_HOST` | IP или домен сервера |
+| Secrets | `SSH_USER` | пользователь для деплоя |
+| Secrets | `SSH_PORT` | порт SSH (необязательно, по умолчанию 22) |
+| Secrets | `SSH_PRIVATE_KEY` | содержимое приватного ключа из шага 3 |
+| Secrets | `DEPLOY_PATH` | абсолютный путь на сервере, например `/opt/remarka` |
+| Variables | `DEPLOY_ENABLED` | `true` — включает job после того, как всё выше готово |
+
+Опционально: в GitHub можно включить ручное подтверждение перед каждым деплоем —
+Settings → Environments → `production` → Required reviewers (job уже использует
+`environment: production`).
 
 ## 7. Миграции базы данных
 
