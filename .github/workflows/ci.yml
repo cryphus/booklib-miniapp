@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Линт backend (ruff)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app tests
+
+  test-sqlite:
+    name: Тесты backend (SQLite, быстрый прогон)
+    runs-on: ubuntu-latest
+    needs: lint
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  test-postgres:
+    name: Тесты backend (PostgreSQL + pgvector) и миграции
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: remarka
+          POSTGRES_PASSWORD: remarka
+          POSTGRES_DB: remarka
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U remarka -d remarka"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://remarka:remarka@localhost:5432/remarka
+      SECRET_KEY: ci-postgres-secret
+      TELEGRAM_BOT_TOKEN: "123456:CI-TEST-TOKEN"
+      AI_PROVIDER: fake
+      EMBEDDING_DIM: "64"
+      AI_MIN_RELEVANCE: "0.05"
+      FREE_AI_REQUESTS_PER_MONTH: "3"
+      PREMIUM_AI_REQUESTS_PER_MONTH: "100"
+      RATE_LIMIT_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Применить миграцию на реальном PostgreSQL
+        run: alembic upgrade head
+      - name: Проверить, что миграция не разошлась с моделями
+        run: alembic check
+      - name: Прогнать весь набор тестов против PostgreSQL + pgvector
+        run: pytest -q
+
+  frontend-check:
+    name: Проверка frontend (синтаксис + граф импортов)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Синтаксис каждого ES-модуля
+        run: |
+          set -e
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Граф импортов (битые пути, несуществующие экспорты)
+        run: python scripts/check_modules.py
+
+  docker-build:
+    name: Сборка Docker-образов
+    runs-on: ubuntu-latest
+    needs: [test-sqlite, frontend-check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Собрать образ backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: false
+          tags: remarka-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Собрать образ frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: remarka-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  compose-smoke:
+    name: Дымовой тест docker compose (полный стек)
+    runs-on: ubuntu-latest
+    needs: [docker-build, test-postgres]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Подготовить .env для локального прогона
+        run: |
+          cp .env.example .env
+          sed -i 's/^SECRET_KEY=.*/SECRET_KEY=ci-smoke-secret/' .env
+      - name: Поднять backend и postgres
+        run: docker compose up --build -d backend postgres
+      - name: Дождаться готовности backend (/health)
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8000/health; then
+              echo; exit 0
+            fi
+            sleep 3
+          done
+          echo "backend не ответил за отведённое время"
+          exit 1
+      - name: Логи при падении
+        if: failure()
+        run: docker compose logs
+      - name: Остановить и снести volumes
+        if: always()
+        run: docker compose down -v
